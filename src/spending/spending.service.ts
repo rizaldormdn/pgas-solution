@@ -1,4 +1,4 @@
-import { Injectable } from "@nestjs/common";
+import { Injectable, BadRequestException, Logger } from "@nestjs/common";
 import { SpendingRepository } from "./spending.repository";
 import * as ExcelJS from "exceljs";
 import * as PDFDocument from "pdfkit";
@@ -6,6 +6,8 @@ import { Response } from "express";
 
 @Injectable()
 export class SpendingService {
+  private readonly logger = new Logger(SpendingService.name);
+
   constructor(private readonly spendingRepository: SpendingRepository) {}
 
   private formatDate(date: string | Date | undefined | null): string {
@@ -52,7 +54,7 @@ export class SpendingService {
     };
   }
 
-  async exportXlsx(
+  async exportReport(
     res: Response,
     query: {
       minSpending?: number;
@@ -60,16 +62,46 @@ export class SpendingService {
       startDate?: string;
       endDate?: string;
     },
+    format: string,
   ) {
-    const [data, total] = await Promise.all([
-      this.spendingRepository.getReport(query),
-      this.spendingRepository.getTotalSpending(query),
-    ]);
+    try {
+      // Validasi format
+      const validFormats = ["xlsx", "pdf"];
+      if (!format || !validFormats.includes(format.toLowerCase())) {
+        throw new BadRequestException(
+          `Invalid format. Please use one of: ${validFormats.join(", ")}`,
+        );
+      }
 
+      const [data, total] = await Promise.all([
+        this.spendingRepository.getReport(query),
+        this.spendingRepository.getTotalSpending(query),
+      ]);
+
+      this.logger.log(`Exporting report to ${format} format`);
+      this.logger.log(`Total records: ${data.length}, Total amount: ${total}`);
+
+      if (format.toLowerCase() === "xlsx") {
+        return this.exportToXlsx(res, data, total, query);
+      } else if (format.toLowerCase() === "pdf") {
+        return this.exportToPdf(res, data, total, query);
+      }
+    } catch (error) {
+      this.logger.error(`Export error: ${error.message}`);
+      throw error;
+    }
+  }
+
+  private async exportToXlsx(
+    res: Response,
+    data: any[],
+    total: number,
+    query: any,
+  ) {
     const workbook = new ExcelJS.Workbook();
     const worksheet = workbook.addWorksheet("Spending Report");
 
-    // Setup columns with better formatting
+    // Setup columns
     worksheet.columns = [
       { header: "No", key: "no", width: 8 },
       { header: "Date & Time", key: "spending_date", width: 20 },
@@ -88,7 +120,7 @@ export class SpendingService {
       fgColor: { argb: "FFE0E0E0" },
     };
 
-    // Add data with formatted date
+    // Add data
     data.forEach((item: any, index: number) => {
       const row = worksheet.addRow({
         no: index + 1,
@@ -98,7 +130,6 @@ export class SpendingService {
         spending: Number(item.spending) || 0,
       });
 
-      // Style each row
       row.alignment = { vertical: "middle" };
       row.getCell(5).numFmt = "#,##0.00";
     });
@@ -112,7 +143,6 @@ export class SpendingService {
       spending: total || 0,
     });
 
-    // Style total row
     totalRow.font = { bold: true, size: 11 };
     totalRow.alignment = { horizontal: "center", vertical: "middle" };
     totalRow.fill = {
@@ -146,28 +176,23 @@ export class SpendingService {
 
     await workbook.xlsx.write(res);
     res.end();
+
+    this.logger.log(`Excel export completed: ${data.length} records`);
   }
 
-  async exportPdf(
+  // PRIVATE METHOD: Export to PDF
+  private async exportToPdf(
     res: Response,
-    query: {
-      minSpending?: number;
-      maxSpending?: number;
-      startDate?: string;
-      endDate?: string;
-    },
+    data: any[],
+    total: number,
+    query: any,
   ) {
-    const [data, total] = await Promise.all([
-      this.spendingRepository.getReport(query),
-      this.spendingRepository.getTotalSpending(query),
-    ]);
-
     const doc = new PDFDocument({
       margin: 30,
       size: "A4",
       info: {
         Title: "Spending Report",
-        Author: "System",
+        Author: "PGAS Solution",
       },
     });
 
@@ -179,7 +204,7 @@ export class SpendingService {
 
     doc.pipe(res);
 
-    // Header Section
+    // Header
     doc
       .fontSize(18)
       .font("Helvetica-Bold")
@@ -188,27 +213,11 @@ export class SpendingService {
 
     doc.moveDown();
 
-    // Filter Information
-    doc.fontSize(9).font("Helvetica");
-    const filters: string[] = [];
-    if (query.minSpending) {
-      filters.push(`Min Spending: ${this.formatCurrency(query.minSpending)}`);
-    }
-    if (query.maxSpending) {
-      filters.push(`Max Spending: ${this.formatCurrency(query.maxSpending)}`);
-    }
-
-    if (filters.length > 0) {
-      filters.forEach((filter, index) => {
-        doc.text(filter, { indent: 30 });
-        if (index === filters.length - 1) doc.moveDown();
-      });
-    }
-
+    // Table Header
     const tableTop = doc.y + 5;
-    const pageWidth = doc.page.width - 60; // 30 margin kiri + 30 margin kanan
-    const tableWidth = 420; // Lebar tabel
-    const startX = (doc.page.width - tableWidth) / 2; // Hitung posisi center
+    const pageWidth = doc.page.width - 60;
+    const tableWidth = 420;
+    const startX = (doc.page.width - tableWidth) / 2;
 
     const colPositions = {
       no: { x: startX, width: 25 },
@@ -218,7 +227,7 @@ export class SpendingService {
       amount: { x: startX + 330, width: 90 },
     };
 
-    // Draw table header background - gunakan startX
+    // Header background
     doc.rect(startX, tableTop - 3, tableWidth, 20).fill("#E8E8E8");
 
     doc.fontSize(9).font("Helvetica-Bold");
@@ -229,13 +238,12 @@ export class SpendingService {
     doc.text("Department", colPositions.department.x, tableTop);
     doc.text("Amount", colPositions.amount.x, tableTop);
 
-    // Draw header line - gunakan startX
     doc
       .moveTo(startX, tableTop + 17)
       .lineTo(startX + tableWidth, tableTop + 17)
       .stroke();
 
-    // Table Body - update semua posisi x
+    // Table Body
     doc.font("Helvetica").fontSize(8);
     let y = tableTop + 25;
 
@@ -243,7 +251,7 @@ export class SpendingService {
       if (y > 780) {
         doc.addPage();
         y = 30;
-        // Redraw header on new page - gunakan startX
+        // Redraw header
         doc.fontSize(9).font("Helvetica-Bold");
         doc.text("No", colPositions.no.x, y);
         doc.text("Date & Time", colPositions.date.x, y);
@@ -258,13 +266,12 @@ export class SpendingService {
         doc.font("Helvetica").fontSize(8);
       }
 
-      // Alternating row colors - gunakan startX
+      // Alternating row colors
       if (index % 2 === 0) {
         doc.rect(startX, y - 3, tableWidth, 12).fill("#F5F5F5");
         doc.fillColor("black");
       }
 
-      // Text alignment di dalam cell (rata kiri untuk semua kecuali Amount)
       doc.text(String(index + 1), colPositions.no.x, y);
       doc.text(this.formatDate(item.spending_date), colPositions.date.x, y);
       doc.text(item.employee_name || "-", colPositions.employee.x, y);
@@ -274,7 +281,7 @@ export class SpendingService {
       y += 14;
     });
 
-    // Total Section - gunakan startX
+    // Total Section
     const totalY = y + 10;
 
     doc
@@ -285,25 +292,22 @@ export class SpendingService {
     doc.rect(startX, totalY - 3, tableWidth, 16).fill("#E8E8E8");
     doc.fillColor("black");
 
-    doc
-      .fontSize(10)
-      .font("Helvetica-Bold")
-      .text("TOTAL", colPositions.department.x, totalY);
+    doc.fontSize(10).font("Helvetica-Bold");
+    doc.text("TOTAL", colPositions.department.x, totalY);
     doc.text(this.formatCurrency(total), colPositions.amount.x, totalY);
 
-    // Footer - center
-    const footerY = doc.page.height - 30;
-    doc
-      .fontSize(8)
-      .font("Helvetica")
-      .fillColor("#666666")
-      .text(
-        `Total Records: ${data.length} | Generated: ${this.formatDate(new Date())}`,
-        30,
-        footerY,
-        { align: "center", width: doc.page.width - 60 },
-      );
+    // Footer
+    // const footerY = doc.page.height;
+    // doc.fontSize(8).font("Helvetica").fillColor("#666666");
+    // doc.text(
+    //   `Total Records: ${data.length} | Generated: ${this.formatDate(new Date())}`,
+    //   30,
+    //   footerY,
+    //   { align: "center", width: doc.page.width - 60 },
+    // );
 
     doc.end();
+
+    this.logger.log(`PDF export completed: ${data.length} records`);
   }
 }

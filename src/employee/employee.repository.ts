@@ -1,4 +1,4 @@
-import { Injectable } from "@nestjs/common";
+import { Injectable, Logger } from "@nestjs/common";
 import { InjectDataSource } from "@nestjs/typeorm";
 import { DataSource } from "typeorm";
 
@@ -72,7 +72,7 @@ export class EmployeeRepository {
     return parseInt(result[0].count, 10);
   }
 
-  async findByEmail(email: string): Promise<any> {
+  async findByEmail(employeeEmail: string): Promise<any> {
     const result = await this.dataSource.query(
       `
         SELECT
@@ -87,8 +87,9 @@ export class EmployeeRepository {
         INNER JOIN roles r ON e.role_id = r.role_id
         WHERE e.employee_email = $1
       `,
-      [email],
+      [employeeEmail],
     );
+    Logger.log(`findByEmail result: ${JSON.stringify(result)}`);
     return result[0] || null;
   }
 
